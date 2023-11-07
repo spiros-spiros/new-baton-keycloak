@@ -27,6 +27,7 @@ func main() {
 	}
 
 	cmd.Version = version
+	cmd.PersistentFlags().String("base-url", "localhost:8080", "keycloak base url. ($BATON_BASE_URL)")
 
 	err = cmd.Execute()
 	if err != nil {
@@ -38,7 +39,7 @@ func main() {
 func getConnector(ctx context.Context, cfg *config) (types.ConnectorServer, error) {
 	l := ctxzap.Extract(ctx)
 
-	cb, err := connector.New(ctx)
+	cb, err := connector.New(ctx, cfg.BaseUrl)
 	if err != nil {
 		l.Error("error creating connector", zap.Error(err))
 		return nil, err
