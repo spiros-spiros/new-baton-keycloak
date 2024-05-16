@@ -57,15 +57,13 @@ type Group struct {
 }
 
 func isExpired(accessToken string) (bool, error) {
-	fmt.Printf("Is Expired- access token %s \n", accessToken)
 	claims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(accessToken, claims, func(token *jwt.Token) (interface{}, error) {
 		return []byte("<YOUR VERIFICATION KEY>"), nil
 	})
 
 	if err != nil {
-		fmt.Printf("Error: %s \n", err.Error())
-		//return true, fmt.Errorf("unable to decode access token")
+		return true, fmt.Errorf("error: %s", err.Error())
 	}
 
 	spew.Dump(claims)
@@ -83,7 +81,6 @@ func isExpired(accessToken string) (bool, error) {
 	expTimestamp := time.Unix(int64(expiry), 0)
 	currentTime := time.Now()
 
-	fmt.Printf("Expired timestamp: %s, Current timestamp: %s", expTimestamp.String(), currentTime.String())
 	if expTimestamp.Before(currentTime) {
 		return true, nil
 	}
@@ -97,13 +94,10 @@ func (c *Client) refreshToken(ctx context.Context) error {
 		return err
 	}
 	if isExpired {
-		fmt.Printf("Access token is expired \n")
 		var token AccessToken
-		//response, err := http.PostForm("http://"+path.Join(c.baseUrl, refreshUrl), url.Values{"username": {"keshav"}, "password": {"c1test12345"}, "client-id": {"admin-cli"}, "grant_type": {"password"}})
 		request, err := http.NewRequest(http.MethodPost, "http://"+path.Join(c.baseUrl, refreshUrl), strings.NewReader(`username=keshav&password=c1test12345&client_id=admin-cli&grant_type=password`))
 		if err != nil {
-			fmt.Printf("Http request failed \n")
-			return err
+			return fmt.Errorf("http request failed %s", err.Error())
 		}
 
 		request.Header.Add("Content-type", "application/x-www-form-urlencoded")
@@ -127,7 +121,6 @@ func (c *Client) refreshToken(ctx context.Context) error {
 			return err
 		}
 		c.accessToken = token.AccessToken
-		fmt.Printf("Access token: %s \n\n", c.accessToken)
 		return nil
 	}
 	return nil
@@ -165,7 +158,7 @@ func (c *Client) ListUsers(ctx context.Context) ([]*User, error) {
 func (c *Client) ListGroups(ctx context.Context) ([]*Group, error) {
 	var ret []*Group
 
-	req, err := http.NewRequest(http.MethodGet, "http://"+path.Join(c.baseUrl, groupUrl), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+path.Join(c.baseUrl, groupUrl), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +180,7 @@ func (c *Client) ListGroups(ctx context.Context) ([]*Group, error) {
 func (c *Client) ListGroupMembers(ctx context.Context, groupId string) ([]*User, error) {
 	var ret []*User
 
-	req, err := http.NewRequest(http.MethodGet, "http://"+path.Join(c.baseUrl, fmt.Sprintf(membersUrl, groupId)), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+path.Join(c.baseUrl, fmt.Sprintf(membersUrl, groupId)), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -225,8 +218,6 @@ func (c *Client) do(ctx context.Context, req *http.Request) (io.Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Printf("%s \n", ret)
 
 	return bytes.NewBuffer(ret), nil
 }
