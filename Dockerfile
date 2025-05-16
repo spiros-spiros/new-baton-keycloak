@@ -34,4 +34,4 @@ COPY --from=builder --chown=appuser:appuser /app/baton-keycloak /app/
 USER appuser
 
 # Run the application
-ENTRYPOINT ["/app/baton-keycloak"]
+ENTRYPOINT ["/app/baton-keycloak", "--provisioning"]

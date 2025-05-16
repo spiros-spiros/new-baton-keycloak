@@ -11,6 +11,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
 	"github.com/grpc-ecosystem/go-grpc-middleware/logging/zap/ctxzap"
+	"github.com/spiros-spiros/baton-keycloak/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -27,11 +28,7 @@ func (o *groupBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId
 	var resources []*v2.Resource
 	annos := annotations.Annotations{}
 
-	if err := o.client.ensureConnected(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
-	groups, err := o.client.client.GetGroups(ctx)
+	groups, nextToken, err := o.client.client.GetGroups(ctx, utils.ParseToken(pToken))
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -44,15 +41,11 @@ func (o *groupBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId
 		resources = append(resources, groupResource)
 	}
 
-	return resources, "", annos, nil
+	return resources, nextToken, annos, nil
 }
 
 func (o *groupBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
 	var entitlements []*v2.Entitlement
-
-	if err := o.client.ensureConnected(ctx); err != nil {
-		return nil, "", nil, err
-	}
 
 	// Create a membership entitlement for the group
 	membershipEntitlement := &v2.Entitlement{
@@ -72,12 +65,8 @@ func (o *groupBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken
 	var grants []*v2.Grant
 	annos := annotations.Annotations{}
 
-	if err := o.client.ensureConnected(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
 	// Get all users in this group directly
-	users, err := o.client.client.GetUsers(ctx)
+	users, err := o.client.client.GetGroupMembers(ctx, resource.Id.Resource)
 	if err != nil {
 		return nil, "", nil, err
 	}
@@ -92,43 +81,23 @@ func (o *groupBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken
 		userResources[*user.ID] = userResource
 	}
 
-	// Get users in this specific group
-	groupUsers, err := o.client.client.GetUsers(ctx)
-	if err != nil {
-		return nil, "", nil, err
-	}
+	for _, user := range users {
+		userResource := userResources[*user.ID]
 
-	for _, user := range groupUsers {
-		userGroups, err := o.client.client.GetUserGroups(ctx, *user.ID)
-		if err != nil {
-			return nil, "", nil, err
+		grant := &v2.Grant{
+			Id: fmt.Sprintf("grant:%s:%s", resource.Id.Resource, *user.ID),
+			Entitlement: &v2.Entitlement{
+				Id:          fmt.Sprintf("group:%s:membership", resource.Id.Resource),
+				DisplayName: fmt.Sprintf("Membership in %s", resource.DisplayName),
+				Description: fmt.Sprintf("Membership in the %s group", resource.DisplayName),
+				GrantableTo: []*v2.ResourceType{userResourceType},
+				Slug:        "membership",
+				Resource:    resource,
+			},
+			Principal: userResource,
 		}
 
-		// Check if user is in this group
-		for _, group := range userGroups {
-			if *group.ID == resource.Id.Resource {
-				userResource, ok := userResources[*user.ID]
-				if !ok {
-					continue
-				}
-
-				grant := &v2.Grant{
-					Id: fmt.Sprintf("grant:%s:%s", resource.Id.Resource, *user.ID),
-					Entitlement: &v2.Entitlement{
-						Id:          fmt.Sprintf("group:%s:membership", resource.Id.Resource),
-						DisplayName: fmt.Sprintf("Membership in %s", resource.DisplayName),
-						Description: fmt.Sprintf("Membership in the %s group", resource.DisplayName),
-						GrantableTo: []*v2.ResourceType{userResourceType},
-						Slug:        "membership",
-						Resource:    resource,
-					},
-					Principal: userResource,
-				}
-
-				grants = append(grants, grant)
-				break
-			}
-		}
+		grants = append(grants, grant)
 	}
 
 	return grants, "", annos, nil
@@ -141,11 +110,6 @@ func (o *groupBuilder) Grant(ctx context.Context, resource *v2.Resource, entitle
 		zap.String("resource_display_name", resource.DisplayName),
 		zap.String("entitlement_id", entitlement.Id),
 	)
-
-	if err := o.client.ensureConnected(ctx); err != nil {
-		l.Error("Failed to ensure connection", zap.Error(err))
-		return nil, nil, err
-	}
 
 	// The entitlement ID should be in the format: group:<groupID>:membership
 	parts := strings.Split(entitlement.Id, ":")
@@ -163,52 +127,15 @@ func (o *groupBuilder) Grant(ctx context.Context, resource *v2.Resource, entitle
 	}
 	l.Info("Extracted group ID", zap.String("group_id", groupID))
 
-	// Get the username from the resource
-	username := resource.Id.Resource
-	if username == "" {
-		l.Error("Username not found in resource")
-		return nil, nil, fmt.Errorf("username not found in resource")
-	}
-	l.Info("Extracted username", zap.String("username", username))
-
-	// Verify the user exists
-	l.Info("Fetching all users to verify user exists")
-	users, err := o.client.client.GetUsers(ctx)
-	if err != nil {
-		l.Error("Failed to get users", zap.Error(err))
-		return nil, nil, fmt.Errorf("failed to get users: %w", err)
-	}
-	l.Info("Found total users", zap.Int("count", len(users)))
-
-	var userID string
-	for _, user := range users {
-		l.Debug("Checking user",
-			zap.String("username", *user.Username),
-			zap.String("user_id", *user.ID),
-		)
-		if *user.Username == username {
-			userID = *user.ID
-			l.Info("Found matching user",
-				zap.String("username", username),
-				zap.String("user_id", userID),
-			)
-			break
-		}
-	}
-
-	if userID == "" {
-		l.Error("User not found in Keycloak", zap.String("username", username))
-		return nil, nil, fmt.Errorf("user not found: %s", username)
-	}
+	userID := resource.Id.Resource
 
 	// Add user to group
 	l.Info("Attempting to add user to group",
-		zap.String("username", username),
 		zap.String("user_id", userID),
 		zap.String("group_id", groupID),
 	)
-	err = o.client.client.AddUserToGroup(ctx, userID, groupID)
-	if err != nil {
+
+	if err := o.client.client.AddUserToGroup(ctx, userID, groupID); err != nil {
 		l.Error("Failed to add user to group", zap.Error(err))
 		return nil, nil, fmt.Errorf("failed to add user to group: %w", err)
 	}
@@ -244,11 +171,6 @@ func (o *groupBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations
 		zap.String("entitlement_id", grant.Entitlement.Id),
 	)
 
-	if err := o.client.ensureConnected(ctx); err != nil {
-		l.Error("Failed to ensure connection", zap.Error(err))
-		return nil, err
-	}
-
 	// Extract group ID from the entitlement ID
 	parts := strings.Split(grant.Entitlement.Id, ":")
 	if len(parts) != 3 || parts[0] != "group" || parts[2] != "membership" {
@@ -263,52 +185,15 @@ func (o *groupBuilder) Revoke(ctx context.Context, grant *v2.Grant) (annotations
 	}
 	l.Info("Extracted group ID", zap.String("group_id", groupID))
 
-	// Get the username from the principal
-	username := grant.Principal.Id.Resource
-	if username == "" {
-		l.Error("Username not found in principal")
-		return nil, fmt.Errorf("username not found in principal")
-	}
-	l.Info("Extracted username", zap.String("username", username))
-
-	// Verify the user exists
-	l.Info("Fetching all users to verify user exists")
-	users, err := o.client.client.GetUsers(ctx)
-	if err != nil {
-		l.Error("Failed to get users", zap.Error(err))
-		return nil, fmt.Errorf("failed to get users: %w", err)
-	}
-	l.Info("Found total users", zap.Int("count", len(users)))
-
-	var userID string
-	for _, user := range users {
-		l.Debug("Checking user",
-			zap.String("username", *user.Username),
-			zap.String("user_id", *user.ID),
-		)
-		if *user.Username == username {
-			userID = *user.ID
-			l.Info("Found matching user",
-				zap.String("username", username),
-				zap.String("user_id", userID),
-			)
-			break
-		}
-	}
-
-	if userID == "" {
-		l.Error("User not found in Keycloak", zap.String("username", username))
-		return nil, fmt.Errorf("user not found: %s", username)
-	}
+	userID := grant.Principal.Id.Resource
 
 	// Remove user from group
 	l.Info("Attempting to remove user from group",
-		zap.String("username", username),
 		zap.String("user_id", userID),
 		zap.String("group_id", groupID),
 	)
-	err = o.client.client.RemoveUserFromGroup(ctx, userID, groupID)
-	if err != nil {
+
+	if err := o.client.client.RemoveUserFromGroup(ctx, userID, groupID); err != nil {
 		l.Error("Failed to remove user from group", zap.Error(err))
 		return nil, fmt.Errorf("failed to remove user from group: %w", err)
 	}

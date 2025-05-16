@@ -9,6 +9,7 @@ import (
 	"github.com/conductorone/baton-sdk/pkg/annotations"
 	"github.com/conductorone/baton-sdk/pkg/pagination"
 	"github.com/conductorone/baton-sdk/pkg/types/resource"
+	"github.com/spiros-spiros/baton-keycloak/pkg/utils"
 )
 
 // userBuilder implements the resource builder interface for Keycloak user resources.
@@ -36,18 +37,14 @@ func (o *userBuilder) ResourceType(ctx context.Context) *v2.ResourceType {
 //   - annotations.Annotations: Additional metadata
 //   - error: Any error that occurred during the operation
 func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId, pToken *pagination.Token) ([]*v2.Resource, string, annotations.Annotations, error) {
-	var resource []*v2.Resource
 	annos := annotations.Annotations{}
 
-	if err := o.client.ensureConnected(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
-	users, err := o.client.client.GetUsers(ctx)
+	users, nextToken, err := o.client.client.GetUsers(ctx, utils.ParseToken(pToken))
 	if err != nil {
 		return nil, "", nil, err
 	}
 
+	resource := make([]*v2.Resource, 0, len(users))
 	for _, user := range users {
 		userResource, err := parseIntoUserResource(user, nil)
 		if err != nil {
@@ -56,7 +53,7 @@ func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 		resource = append(resource, userResource)
 	}
 
-	return resource, "", annos, nil
+	return resource, nextToken, annos, nil
 }
 
 // Entitlements returns entitlements for the user resource.
@@ -71,29 +68,8 @@ func (o *userBuilder) List(ctx context.Context, parentResourceID *v2.ResourceId,
 //   - annotations.Annotations: Additional metadata
 //   - error: Any error that occurred during the operation
 func (o *userBuilder) Entitlements(ctx context.Context, resource *v2.Resource, _ *pagination.Token) ([]*v2.Entitlement, string, annotations.Annotations, error) {
+	userID := resource.Id.Resource
 	var entitlements []*v2.Entitlement
-
-	if err := o.client.ensureConnected(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
-	// Get the user by username to get their ID
-	users, err := o.client.client.GetUsers(ctx)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	var userID string
-	for _, user := range users {
-		if *user.Username == resource.DisplayName {
-			userID = *user.ID
-			break
-		}
-	}
-
-	if userID == "" {
-		return nil, "", nil, fmt.Errorf("user not found")
-	}
 
 	// Get all groups the user is a member of
 	groups, err := o.client.client.GetUserGroups(ctx, userID)
@@ -138,27 +114,7 @@ func (o *userBuilder) Grants(ctx context.Context, resource *v2.Resource, pToken 
 	var grants []*v2.Grant
 	annos := annotations.Annotations{}
 
-	if err := o.client.ensureConnected(ctx); err != nil {
-		return nil, "", nil, err
-	}
-
-	// Get the user by username to get their ID
-	users, err := o.client.client.GetUsers(ctx)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	var userID string
-	for _, user := range users {
-		if *user.Username == resource.DisplayName {
-			userID = *user.ID
-			break
-		}
-	}
-
-	if userID == "" {
-		return nil, "", nil, fmt.Errorf("user not found")
-	}
+	userID := resource.Id.Resource
 
 	// Get all groups the user is a member of
 	groups, err := o.client.client.GetUserGroups(ctx, userID)
@@ -211,11 +167,7 @@ func newUserBuilder(client *Connector) *userBuilder {
 //   - error: Any conversion error that occurred
 func parseIntoUserResource(user *gocloak.User, parentResourceID *v2.ResourceId) (*v2.Resource, error) {
 	var userStatus = v2.UserTrait_Status_STATUS_ENABLED
-
-	username := ""
-	if user.Username != nil {
-		username = *user.Username
-	}
+	username := safeString(user.Username)
 
 	profile := map[string]interface{}{
 		"username":  username,
@@ -233,7 +185,7 @@ func parseIntoUserResource(user *gocloak.User, parentResourceID *v2.ResourceId) 
 	ret, err := resource.NewUserResource(
 		username,
 		userResourceType,
-		username,
+		safeString(user.ID),
 		userTraits,
 		resource.WithParentResourceID(parentResourceID),
 	)

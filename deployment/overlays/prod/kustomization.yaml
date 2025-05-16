@@ -1,0 +1,12 @@
+
+images:
+- name: wcs-keycloak-cone-connector
+  newName: europe-docker.pkg.dev/semi-wcs-dev/keycloak-baton/baton-keycloak
+  newTag: d6b49b22a159616ae3e42f69909b5cfe79067b4d831112d7dab8f8f21b974bc3
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../base
+patches:
+- path: set_resource_limits.yaml
+- path: set_castai_annotations.yaml

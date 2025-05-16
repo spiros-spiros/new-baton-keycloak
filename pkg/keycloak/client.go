@@ -2,7 +2,10 @@ package keycloak
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 
+	"github.com/Clarilab/gocloaksession"
 	"github.com/Nerzal/gocloak/v13"
 )
 
@@ -11,47 +14,110 @@ type Client struct {
 	realm        string
 	clientID     string
 	clientSecret string
-	token        *gocloak.JWT
+	session      gocloaksession.GoCloakSession
 }
 
-func NewClient(serverURL, realm, clientID, clientSecret string) *Client {
+func NewClient(serverURL, realm, clientID, clientSecret string) (*Client, error) {
+	session, err := gocloaksession.NewSession(clientID, clientSecret, realm, serverURL)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Client{
 		client:       gocloak.NewClient(serverURL),
 		realm:        realm,
 		clientID:     clientID,
 		clientSecret: clientSecret,
-	}
-}
-
-func (c *Client) Connect(ctx context.Context) error {
-	token, err := c.client.LoginClient(ctx, c.clientID, c.clientSecret, c.realm)
-	if err != nil {
-		return err
-	}
-	c.token = token
-	return nil
+		session:      session,
+	}, nil
 }
 
 func (c *Client) AddUserToGroup(ctx context.Context, userID, groupID string) error {
-	return c.client.AddUserToGroup(ctx, c.token.AccessToken, c.realm, userID, groupID)
+	token, err := c.session.GetKeycloakAuthToken()
+	if err != nil {
+		return fmt.Errorf("failed to get token: %w", err)
+	}
+
+	return c.client.AddUserToGroup(ctx, token.AccessToken, c.realm, userID, groupID)
 }
 
 func (c *Client) RemoveUserFromGroup(ctx context.Context, userID, groupID string) error {
-	return c.client.DeleteUserFromGroup(ctx, c.token.AccessToken, c.realm, userID, groupID)
+	token, err := c.session.GetKeycloakAuthToken()
+	if err != nil {
+		return fmt.Errorf("failed to get token: %w", err)
+	}
+
+	return c.client.DeleteUserFromGroup(ctx, token.AccessToken, c.realm, userID, groupID)
 }
 
-func (c *Client) GetUsers(ctx context.Context) ([]*gocloak.User, error) {
-	return c.client.GetUsers(ctx, c.token.AccessToken, c.realm, gocloak.GetUsersParams{})
+func (c *Client) GetUsers(ctx context.Context, first int) ([]*gocloak.User, string, error) {
+	token, err := c.session.GetKeycloakAuthToken()
+	if err != nil {
+		return nil, strconv.Itoa(first), fmt.Errorf("failed to get token: %w", err)
+	}
+
+	max := 300
+
+	users, err := c.client.GetUsers(ctx, token.AccessToken, c.realm, gocloak.GetUsersParams{
+		First: pointer(first),
+		Max:   pointer(max),
+	})
+	if err != nil {
+		return nil, strconv.Itoa(first), fmt.Errorf("failed to get users: %w", err)
+	}
+
+	if len(users) == 0 {
+		return nil, "", nil
+	}
+
+	return users, strconv.Itoa(first + max), nil
 }
 
-func (c *Client) GetGroups(ctx context.Context) ([]*gocloak.Group, error) {
-	return c.client.GetGroups(ctx, c.token.AccessToken, c.realm, gocloak.GetGroupsParams{})
+func (c *Client) GetGroupMembers(ctx context.Context, groupID string) ([]*gocloak.User, error) {
+	token, err := c.session.GetKeycloakAuthToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token: %w", err)
+	}
+
+	return c.client.GetGroupMembers(ctx, token.AccessToken, c.realm, groupID, gocloak.GetGroupsParams{})
+}
+
+func (c *Client) GetGroups(ctx context.Context, first int) ([]*gocloak.Group, string, error) {
+	token, err := c.session.GetKeycloakAuthToken()
+	if err != nil {
+		return nil, strconv.Itoa(first), fmt.Errorf("failed to get token: %w", err)
+	}
+
+	max := 300
+
+	groups, err := c.client.GetGroups(ctx, token.AccessToken, c.realm, gocloak.GetGroupsParams{
+		First: pointer(first),
+		Max:   pointer(max),
+	})
+	if err != nil {
+		return nil, strconv.Itoa(first), fmt.Errorf("failed to get groups: %w", err)
+	}
+
+	if len(groups) == 0 {
+		return nil, "", nil
+	}
+
+	return groups, strconv.Itoa(first + max), nil
 }
 
 func (c *Client) GetUserGroups(ctx context.Context, userID string) ([]*gocloak.Group, error) {
-	return c.client.GetUserGroups(ctx, c.token.AccessToken, c.realm, userID, gocloak.GetGroupsParams{})
+	token, err := c.session.GetKeycloakAuthToken()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get token: %w", err)
+	}
+
+	return c.client.GetUserGroups(ctx, token.AccessToken, c.realm, userID, gocloak.GetGroupsParams{})
 }
 
 func (c *Client) Close() error {
 	return nil
+}
+
+func pointer[T any](v T) *T {
+	return &v
 }
